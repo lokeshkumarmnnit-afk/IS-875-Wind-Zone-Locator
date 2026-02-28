@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IS 875 Wind Design Tool</title>
+
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+<style>
+html, body { height:100%; margin:0; }
+#map { height:100%; width:100%; }
+
+.control-box{
+  position:absolute; top:20px; left:20px; z-index:1000;
+  background:white; padding:14px; width:260px;
+  border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,.2);
+  font-family:Arial, sans-serif;
+}
+.control-box h3{ margin:0 0 10px; font-size:16px; }
+.control-box label{ font-size:13px; margin-top:6px; display:block; }
+.control-box input{ width:100%; padding:6px; margin-top:2px; }
+.control-box button{ margin-top:10px; width:100%; padding:8px; font-weight:bold; }
+#result{ margin-top:10px; font-size:13px; }
+
+.legend{
+  position:absolute; bottom:30px; left:20px; z-index:1000;
+  background:white; padding:10px; border-radius:5px;
+  font-size:12px; line-height:18px;
+  box-shadow:0 0 8px rgba(0,0,0,.2);
+}
+.legend span{
+  display:inline-block; width:14px; height:14px;
+  margin-right:6px; vertical-align:middle;
+}
+</style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<div class="control-box">
+<h3>Wind Calculation (IS 875)</h3>
+
+<label>City:</label><input id="city">
+<label>District:</label><input id="district">
+<label>State:</label><input id="state">
+
+<hr>
+
+<label>Latitude (optional):</label><input id="lat">
+<label>Longitude (optional):</label><input id="lon">
+
+<button onclick="calculateWind()">Calculate Wind</button>
+<div id="result"></div>
+</div>
+
+<div class="legend">
+<b>IS 875 Wind Zones</b><br>
+<span style="background:#d4f1f9"></span> Zone I – 33 m/s<br>
+<span style="background:#b6e3a8"></span> Zone II – 39 m/s<br>
+<span style="background:#fff3a0"></span> Zone III – 44 m/s<br>
+<span style="background:#f9c784"></span> Zone IV – 47 m/s<br>
+<span style="background:#f28b82"></span> Zone V – 50 m/s<br>
+<span style="background:#d81b60"></span> Zone VI – 55 m/s
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+/* ---------------- MAP SETUP ---------------- */
+const map = L.map('map', { zoomControl:false }).setView([22.5,79],5);
+L.control.zoom({ position:'topright' }).addTo(map);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenStreetMap contributors'
+}).addTo(map);
+
+let marker;
+
+/* ---------------- ZONE COLORS ---------------- */
+function zoneColor(vb){
+  if(vb===33) return "#d4f1f9";
+  if(vb===39) return "#b6e3a8";
+  if(vb===44) return "#fff3a0";
+  if(vb===47) return "#f9c784";
+  if(vb===50) return "#f28b82";
+  if(vb===55) return "#d81b60";
+  return "#ccc";
+}
+
+/* ---------------- CLICK HANDLER (SHARED) ---------------- */
+function handleMapClick(latlng){
+  const latVal = latlng.lat.toFixed(5);
+  const lonVal = latlng.lng.toFixed(5);
+
+  lat.value = latVal;
+  lon.value = lonVal;
+
+  city.value = "";
+  district.value = "";
+  state.value = "";
+
+  if(marker) map.removeLayer(marker);
+
+  marker = L.marker([latVal, lonVal])
+    .addTo(map)
+    .bindPopup(
+      `Selected Location<br>
+       Lat: ${latVal}<br>
+       Lon: ${lonVal}`
+    )
+    .openPopup();
+}
+
+/* Click anywhere on map */
+map.on('click', e => handleMapClick(e.latlng));
+
+/* ---------------- LOAD WIND ZONES ---------------- */
+fetch('/wind-zones')
+.then(r=>r.json())
+.then(data=>{
+  L.geoJSON(data,{
+    style:f=>({
+      color:"#333",
+      weight:1,
+      fillOpacity:0.4,
+      fillColor:zoneColor(f.properties.Vb)
+    }),
+    onEachFeature:(f,l)=>{
+      l.on('click', e => handleMapClick(e.latlng));
+      l.bindPopup(
+        `<b>Zone ${f.properties.Zone}</b><br>
+         Basic wind speed: <b>${f.properties.Vb} m/s</b><br>
+         IS 875 (Part 3):2015`
+      );
+    }
+  }).addTo(map);
+});
+
+/* ---------------- WIND CALC ---------------- */
+function calculateWind(){
+  const payload = {};
+
+  if(city.value && district.value && state.value){
+    payload.city = city.value;
+    payload.district = district.value;
+    payload.state = state.value;
+  }
+
+  if(lat.value && lon.value){
+    payload.lat = parseFloat(lat.value);
+    payload.lon = parseFloat(lon.value);
+  }
+
+  fetch('/wind-calc',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    if(marker) map.removeLayer(marker);
+
+    marker = L.marker([d.location.latitude, d.location.longitude])
+      .addTo(map)
+      .bindPopup(
+        `<b>Result</b><br>
+         Zone: <b>${d.wind_zone.zone}</b><br>
+         Vb: <b>${d.wind_zone.Vb} m/s</b><br>
+         Distance to boundary: ${d.wind_zone.distance_to_boundary_km} km`
+      )
+      .openPopup();
+
+    map.setView([d.location.latitude, d.location.longitude],8);
+
+    result.innerHTML = `
+      <b>Zone:</b> ${d.wind_zone.zone}<br>
+      <b>Vb:</b> ${d.wind_zone.Vb} m/s<br>
+      <b>Distance:</b> ${d.wind_zone.distance_to_boundary_km} km<br>
+      <small>${d.wind_zone.decision_reason}</small>
+    `;
+  });
+}
+</script>
+
+</body>
+</html>
